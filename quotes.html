@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>報價單總覽</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body{ background:#f7f7fb; }
+    .page-title{ font-weight:800; letter-spacing:.02em; }
+    .card{ border:0; box-shadow: 0 6px 24px rgba(18,38,63,.08); border-radius:16px; }
+    .badge-pill{ border-radius: 999px; }
+    .table thead th{ position:sticky; top:0; background:#fff; z-index:2; }
+    .id-mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .small-mono{ font-size:.8rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  </style>
+</head>
+<body>
+<div class="container py-4">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h1 class="page-title m-0">📄 報價單總覽</h1>
+    <div>
+      <a href="./" class="btn btn-outline-primary">＋ 建立新報價單</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <div class="row g-2 mb-3">
+        <div class="col-sm-4">
+          <input id="q" class="form-control" placeholder="搜尋 客戶/電話/地址/技師/ID">
+        </div>
+        <div class="col-sm-5">
+          <div class="d-flex gap-2">
+            <select id="filterStatus" class="form-select">
+              <option value="all">全部狀態</option>
+              <option value="active">未作廢</option>
+              <option value="cancelled">已作廢</option>
+            </select>
+            <select id="sortOrder" class="form-select">
+              <option value="desc">最新優先</option>
+              <option value="asc">最舊優先</option>
+            </select>
+          </div>
+        </div>
+        <div class="col-sm-3 text-end">
+          <button id="reload" class="btn btn-secondary">重新整理</button>
+        </div>
+      </div>
+      <div class="table-responsive" style="max-height: 70vh;">
+        <table class="table align-middle">
+          <thead>
+            <tr>
+              <th style="width:12rem">建立時間</th>
+              <th>客戶</th>
+              <th>合計</th>
+              <th>ID</th>
+              <th style="width:10rem">動作</th>
+            </tr>
+          </thead>
+          <tbody id="rows">
+            <tr><td colspan="5" class="text-center text-muted py-5">載入中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="d-flex justify-content-center mt-3">
+        <button id="moreBtn" class="btn btn-outline-primary d-none">載入更多</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+
+let NEXT = "";
+
+async function fetchList(next=""){
+  const url = new URL("/.netlify/functions/list", location.origin);
+  if (next) url.searchParams.set("next", next);
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error("list failed");
+  return await r.json();
+}
+async function fetchDetail(id){
+  const url = new URL("/.netlify/functions/view", location.origin);
+  url.searchParams.set("id", id);
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) return null;
+  return await r.json();
+}
+function fmtDate(s){
+  try{ return new Date(s).toLocaleString(); }catch(_){ return s || ""; }
+}
+function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])); }
+
+function renderItems(items){
+  const tbody = $("#rows");
+  if (!items || !items.length){
+    if (!tbody.children.length) tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-5">沒有資料</td></tr>';
+    return;
+  }
+  if (tbody.children.length === 1 && tbody.querySelector("td")?.textContent.includes("載入中")) tbody.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  for (const it of items){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="text-nowrap">${fmtDate(it.created_at)}</td>
+      <td class="cust-cell text-muted small">—</td>
+      <td class="total-cell fw-bold">—</td>
+      <td class="id-mono small">${escapeHtml(it.id)}</td>
+      <td>
+        <div class="btn-group">
+          <a class="btn btn-primary btn-sm" href="${it.link}" target="_blank">開啟</a>
+          <button class="btn btn-outline-secondary btn-sm copy">複製連結</button>
+        </div>
+      </td>
+    `;
+    tr.querySelector(".copy").addEventListener("click", async ()=>{
+      try{ await navigator.clipboard.writeText(it.link); 
+           const b=tr.querySelector(".copy"); const t=b.textContent; b.textContent="已複製"; setTimeout(()=>b.textContent=t,1200);
+      }catch(_){ alert("複製失敗"); }
+    });
+    frag.appendChild(tr);
+
+    // Lazy 填充詳細資料（客戶/合計）
+    fetchDetail(it.id).then(data=>{
+      const cust = (data?.data?.customer || "").trim() || (data?.resource?.context?.custom?.customer || "");
+      const total = (data?.data?.total || "").trim();
+      const cancelled = !!(data?.resource?.context?.custom?.status === "cancelled");
+      const c = tr.querySelector(".cust-cell");
+      const t = tr.querySelector(".total-cell");
+      c.textContent = cust || "—";
+      t.textContent = total ? (Number(total)||0).toLocaleString() + " 元" : "—";
+      tr.setAttribute('data-cancelled', cancelled ? '1' : '0'); if (cancelled){
+        tr.classList.add("table-warning");
+        t.insertAdjacentHTML("beforeend", ' <span class="badge bg-warning text-dark badge-pill ms-1">已作廢</span>');
+      }
+    }).catch(()=>{ tr.setAttribute('data-cancelled','0'); }).finally(()=>{ applyClientSortAndFilter(); });
+  }
+  tbody.appendChild(frag);
+}
+
+async function load(next=""){
+  $("#moreBtn").classList.add("d-none");
+  const data = await fetchList(next);
+  renderItems(data.items || []);
+  NEXT = data.next || "";
+  if (NEXT) $("#moreBtn").classList.remove("d-none");
+}
+
+$("#moreBtn").addEventListener("click", ()=> load(NEXT));
+$("#reload").addEventListener("click", ()=> { $("#rows").innerHTML=''; NEXT=""; load(); });
+
+// 客戶端搜尋（在已載入的列上篩選）
+$("#q").addEventListener("input", e=>{
+  const q = e.target.value.trim().toLowerCase();
+  $$("#rows tr").forEach(tr=>{
+    const txt = tr.textContent.toLowerCase();
+    tr.classList.toggle("d-none", q && !txt.includes(q));
+  });
+});
+
+// === 進階：排序與狀態篩選（前端處理） ===
+let CURRENT_SORT = 'desc';      // 'desc' 最新優先；'asc' 最舊優先
+let CURRENT_FILTER = 'all';     // 'all' | 'active' | 'cancelled'
+
+function applyClientSortAndFilter(){
+  const tbody = $("#rows");
+  const rows = Array.from(tbody.querySelectorAll("tr")).filter(tr=> tr.querySelector(".id-mono"));
+
+  // 依 created_at 排序（從第一欄取文字再轉日期）
+  rows.sort((a,b)=>{
+    const ta = new Date(a.children[0]?.textContent || 0).getTime();
+    const tb = new Date(b.children[0]?.textContent || 0).getTime();
+    return CURRENT_SORT === 'asc' ? ta - tb : tb - ta;
+  });
+
+  // 重新附加排序後的列
+  rows.forEach(tr=> tbody.appendChild(tr));
+
+  // 狀態篩選（依 data-cancelled 屬性）
+  rows.forEach(tr=>{
+    const isCancelled = tr.getAttribute('data-cancelled') === '1';
+    const visible = (CURRENT_FILTER === 'all') ||
+                    (CURRENT_FILTER === 'active' && !isCancelled) ||
+                    (CURRENT_FILTER === 'cancelled' && isCancelled);
+    tr.classList.toggle('d-none', !visible);
+  });
+}
+
+// 綁定控制項
+document.addEventListener('DOMContentLoaded', ()=>{
+  const selSort = $("#sortOrder");
+  const selFilter = $("#filterStatus");
+  selSort?.addEventListener('change', ()=>{ CURRENT_SORT = selSort.value; applyClientSortAndFilter(); });
+  selFilter?.addEventListener('change', ()=>{ CURRENT_FILTER = selFilter.value; applyClientSortAndFilter(); });
+});
+
+document.addEventListener("DOMContentLoaded", ()=> load());
+</script>
+</body>
+</html>
