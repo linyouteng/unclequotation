@@ -1,7 +1,7 @@
-//
 // netlify/functions/list.js
 // Hybrid：先用 Cloudinary Search API（public_id 前綴），若無結果/失敗再用 Admin API prefix 當備援。
 // 保留分頁 "__END__" 標記避免「載入更多」重複；支援 ?noprefix=1 排查。
+// 回傳 _total / _total_known（若由 Search 取得 total_count）。
 
 const RTYPES = ["raw","image","video"];
 const DTYPES = ["upload","authenticated","private"];
@@ -25,6 +25,8 @@ export async function handler(event) {
 
     let items = [];
     let next_map = {};
+    let _grandTotal = 0;
+    let _totalKnown = true;
 
     for (const r of RTYPES){
       for (const d of DTYPES){
@@ -34,12 +36,10 @@ export async function handler(event) {
         // 1) Search API first
         let resources = [];
         let nextCur = "";
-        let searchTried = false;
         let searchOk = false;
 
         try{
-          searchTried = true;
-          // expression：若停用前綴 -> 用 folder 過濾；否則以 public_id 前綴
+          // expression：若停用前綴 -> 用 folder；否則以 public_id 前綴
           const expr = disablePrefix
             ? `folder="${escapeExpr(FOLDER)}" AND resource_type=${r} AND type=${d}`
             : `public_id="${escapeExpr(fullPrefix)}*" AND resource_type=${r} AND type=${d}`;
@@ -54,20 +54,24 @@ export async function handler(event) {
               sort_by: [{ public_id: "desc" }]
             })
           });
+
           if (sres.ok){
             const data = await sres.json().catch(()=>({}));
             resources = data.resources || [];
             nextCur = data.next_cursor || "";
+            // 嘗試讀取 total_count（Search 專屬）
+            if (typeof data.total_count === "number") _grandTotal += data.total_count; else _totalKnown = false;
             searchOk = true;
           }
-        }catch(_){ /* ignore search errors, fall back */ }
+        }catch(_){ /* ignore errors; fallback below */ }
 
-        // 2) Fallback: Admin API by prefix （更穩）
+        // 2) Fallback: Admin API by prefix（更穩）
         if (!searchOk || resources.length === 0){
           const url = new URL(`https://api.cloudinary.com/v1_1/${cloud}/resources/${r}/${d}`);
           url.searchParams.set("prefix", fullPrefix);
           url.searchParams.set("max_results", String(per));
           if (cursor[key] && cursor[key] !== "__END__") url.searchParams.set("next_cursor", cursor[key]);
+
           const ares = await fetch(url.toString(), { headers: { "Authorization": auth, "Cache-Control":"no-store" } });
           if (!ares.ok){
             const detail = await safeText(ares);
@@ -76,12 +80,14 @@ export async function handler(event) {
           const data = await ares.json().catch(()=>({}));
           resources = data.resources || [];
           nextCur = data.next_cursor || "";
+          // Admin API 無 total_count
+          _totalKnown = false;
         }
 
         // 更新游標：若沒有下一頁就標記為 __END__
         next_map[key] = nextCur ? nextCur : "__END__";
 
-        // push items
+        // 彙整 items
         for (const rsc of resources){
           const pid = String(rsc.public_id || "").replace(/^\/+/, "");
           const id  = pid.replace(new RegExp(`^${escapeRe(FOLDER)}/?`), "") || pid;
@@ -104,7 +110,7 @@ export async function handler(event) {
     // 最新在前
     items.sort((a,b)=> new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     const next = serializeCursor(next_map);
-    return json(200, { items, next });
+    return json(200, { items, next, _total: _grandTotal, _total_known: _totalKnown });
   } catch (e) {
     return json(500, { error: String(e?.message || e) });
   }

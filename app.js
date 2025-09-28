@@ -158,16 +158,21 @@ function updateTotals(){
   });
 
   // 未稅總計
-  setText(qs("#total"), total);
-
-  // 含稅總計（加 5%）
+  // Dynamic totals rendering (no static #total/#totalWithTax banners)
   const totalWithTax = Math.round(total * 1.05);
-  setText(qs("#totalWithTax"), totalWithTax);
-
-  // 顯示/隱藏含稅區塊，並決定手機底欄顯示哪個金額
   const showTax = qs("#toggleTax")?.checked === true;
-  const taxBox = qs("#taxBox");
-  if (taxBox) taxBox.classList.toggle("d-none", !showTax);
+  (function(){
+    const container = qs("#totalContainer");
+    if (container) {
+      container.innerHTML = showTax
+        ? `<h5 class="mt-2 total-banner text-success">含稅 (5%)：<span id="totalWithTax">${totalWithTax}</span> 元</h5>`
+        : `<h5 class="mt-3 total-banner">合計：<span id="total">${total}</span> 元</h5>`;
+    }
+  })();
+
+  // Mobile footer number & tag
+  setText(qs("#totalMobile"), showTax ? totalWithTax : total);
+  { const tag = qs("#totalMobileTag"); if (tag) tag.classList.toggle("d-none", !showTax); }
 
   // 手機底部合計：若開啟含稅，就顯示含稅；否則顯示未稅
   setText(qs("#totalMobile"), showTax ? totalWithTax : total);
@@ -323,17 +328,25 @@ async function handleShareClick(){
     if(!res.ok){ const t = await res.text(); alert("產生連結失敗：" + t); return; }
     const data = await res.json();
     const href = data.share_url || data.pdf_url || "#";
-    const box = qs("#shareLinkBox");
+    
+    // Append tax preference as query param to the share link
+    try {
+      const taxOn = qs('#toggleTax')?.checked === true;
+      const urlObj = new URL(href, location.href);
+      urlObj.searchParams.set('tax', taxOn ? '1' : '0');
+      var hrefWithTax = urlObj.toString();
+    } catch(_) { var hrefWithTax = href; }
+const box = qs("#shareLinkBox");
     removeClass(box, "d-none");
     box.innerHTML = `
       <div class="mb-1 fw-bold">專屬報價單網址</div>
       <div class="input-group">
-        <input type="text" class="form-control" id="shareLinkInput" value="${href}" readonly>
+        <input type="text" class="form-control" id="shareLinkInput" value="${hrefWithTax}" readonly>
         <button class="btn btn-primary" id="copyLinkBtn" type="button">📋 一鍵複製</button>
       </div>
-      <div class="mt-2"><a href="${href}" target="_blank">${href}</a></div>`;
+      <div class="mt-2"><a href="${hrefWithTax}" target="_blank">${hrefWithTax}</a></div>`;
     qs('#copyLinkBtn')?.addEventListener('click', async ()=>{
-      const link = qs('#shareLinkInput')?.value || href;
+      const link = qs('#shareLinkInput')?.value || hrefWithTax;
       try{
         if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(link);
         else { const ta=document.createElement('textarea'); ta.value=link; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
@@ -369,7 +382,7 @@ function collectShareData(){
     techPhone: qs("#technicianPhone").value,
     cleanTime: qs("#cleanFull").textContent,
     otherNotes:qs("#otherNotes").value,
-    items, total: qs("#total").textContent
+    items, total: (function(){ try{ let sum=0; qsa("#quoteTable tbody tr").forEach(tr=>{ const v=parseInt(tr.querySelector(".subtotal")?.textContent||"0",10); sum+=isNaN(v)?0:v; }); return String(sum);}catch(_){return "0";} })()
   };
 }
 
@@ -555,6 +568,23 @@ document.addEventListener('click', function(e){
    初始：若 admin，預先顯示取消鈕與唯讀動作區（避免晚一步載入）
 ===================== */
 document.addEventListener('DOMContentLoaded', function(){
+  // Initialize tax mode from URL (?tax=1 or ?tax=0)
+  (function(){
+    try {
+      const taxParam = getParam('tax');
+      const toggle = qs('#toggleTax');
+      const group  = toggle?.closest('.form-check') || qs('#taxToggleGroup');
+      if (taxParam === '1') {
+        if (toggle) toggle.checked = true;
+        if (group) group.classList.remove('d-none');
+      } else if (taxParam === '0') {
+        if (toggle) toggle.checked = false;
+        if (group) group.classList.add('d-none');
+      }
+      if (typeof updateTotals === 'function') updateTotals();
+    } catch(_) {}
+  })();
+
   removeClass(qs('#readonlyActions'), 'd-none');
   removeClass(qs('#cancelBtnDesktop'), 'd-none');
   removeClass(qs('#cancelBtnMobile'), 'd-none');
@@ -697,6 +727,23 @@ async function callCancel(reason) {
 // ========== End Patch ==========
 
 document.addEventListener('DOMContentLoaded', function(){
+  // Initialize tax mode from URL (?tax=1 or ?tax=0)
+  (function(){
+    try {
+      const taxParam = getParam('tax');
+      const toggle = qs('#toggleTax');
+      const group  = toggle?.closest('.form-check') || qs('#taxToggleGroup');
+      if (taxParam === '1') {
+        if (toggle) toggle.checked = true;
+        if (group) group.classList.remove('d-none');
+      } else if (taxParam === '0') {
+        if (toggle) toggle.checked = false;
+        if (group) group.classList.add('d-none');
+      }
+      if (typeof updateTotals === 'function') updateTotals();
+    } catch(_) {}
+  })();
+
   if (window.__QUOTE_CANCELLED__) {
     showCancelledUI(window.__QUOTE_CANCEL_REASON__ || '', window.__QUOTE_CANCEL_TIME__ || '');
     alertCancelledOnce();
@@ -886,5 +933,22 @@ document.addEventListener('DOMContentLoaded', function(){
 // === End Confirmed Modal ===
 
 document.addEventListener('DOMContentLoaded', function(){
+  // Initialize tax mode from URL (?tax=1 or ?tax=0)
+  (function(){
+    try {
+      const taxParam = getParam('tax');
+      const toggle = qs('#toggleTax');
+      const group  = toggle?.closest('.form-check') || qs('#taxToggleGroup');
+      if (taxParam === '1') {
+        if (toggle) toggle.checked = true;
+        if (group) group.classList.remove('d-none');
+      } else if (taxParam === '0') {
+        if (toggle) toggle.checked = false;
+        if (group) group.classList.add('d-none');
+      }
+      if (typeof updateTotals === 'function') updateTotals();
+    } catch(_) {}
+  })();
+
   qs('#toggleTax')?.addEventListener('change', updateTotals);
 });
