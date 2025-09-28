@@ -1,6 +1,8 @@
 // netlify/functions/list.js
-// Cloudinary 報價單列表：使用 Admin API prefix，修正「載入更多」重複問題。
-// 每個類別分頁用 "__END__" 標記結束，避免重複抓取。
+// 列出 Cloudinary 報價單（raw/image/video × upload/authenticated/private）
+// 以 public_id 前綴 (folder + QUOTE_PREFIX) 為主要搜尋條件；
+// 若 Search API 無法命中則 fallback 到 Admin API prefix 列表。
+// 支援 ?noprefix=1 停用前綴過濾排查。
 
 const RTYPES = ["raw","image","video"];
 const DTYPES = ["upload","authenticated","private"];
@@ -16,38 +18,70 @@ export async function handler(event) {
 
     const qp = event.queryStringParameters || {};
     const per = Math.min(parseInt(qp.per || "50", 10) || 50, 100);
-    const cursor = parseCursor(qp.next || {});
+    const cursor = parseCursor(qp.next || "");
     const disablePrefix = qp.noprefix === "1";
+
     const auth = "Basic " + Buffer.from(apiKey + ":" + apiSecret).toString("base64");
-    const fullPrefix = disablePrefix ? `${FOLDER}/` : `${FOLDER}/${PREFIX}`;
+    const fullPrefix = `${FOLDER}/${disablePrefix ? "" : PREFIX}`; // e.g. quotes/q-
 
     let items = [];
     let next_map = {};
+    let usedFallback = false;
 
     for (const r of RTYPES){
       for (const d of DTYPES){
-        const key = `${r}:${d}`;
-        if (cursor[key] === "__END__") {
-          next_map[key] = "__END__";
-          continue;
+        // ---- 1) Search API by public_id prefix ----
+        const expr = `public_id="${escapeExpr(fullPrefix)}*" AND resource_type=${r} AND type=${d}`;
+        let resources = [];
+        let nextCur = "";
+        const sres = await fetch(`https://api.cloudinary.com/v1_1/${cloud}/resources/search`, {
+          method: "POST",
+          headers: { "Authorization": auth, "Content-Type": "application/json", "Cache-Control": "no-store" },
+          body: JSON.stringify({
+            expression: expr,
+            max_results: per,
+            next_cursor: cursor[`${r}:${d}`] || undefined,
+            sort_by: [{ public_id: "desc" }]
+          })
+        });
+        if (sres.ok) {
+          const data = await sres.json().catch(()=>({}));
+          resources = data.resources || [];
+          nextCur = data.next_cursor || "";
+        } else {
+          usedFallback = true;
         }
 
-        const url = new URL(`https://api.cloudinary.com/v1_1/${cloud}/resources/${r}/${d}`);
-        url.searchParams.set("prefix", fullPrefix);
-        url.searchParams.set("max_results", String(per));
-        if (cursor[key]) url.searchParams.set("next_cursor", cursor[key]);
-
-        const res = await fetch(url.toString(), { headers: { "Authorization": auth, "Cache-Control":"no-store" } });
-        if (!res.ok) {
-          const detail = await safeText(res);
-          return json(res.status, { error: "Cloudinary Admin API failed", detail, rtype:r, dtype:d });
+        // ---- 2) Fallback: Admin API prefix listing ----
+        if (!resources.length) {
+          usedFallback = true;
+          const url = new URL(`https://api.cloudinary.com/v1_1/${cloud}/resources/${r}/${d}`);
+          url.searchParams.set("prefix", fullPrefix); // 直接用 quotes/q- 做前綴
+          url.searchParams.set("max_results", String(per));
+          if (cursor[`${r}:${d}`]) url.searchParams.set("next_cursor", cursor[`${r}:${d}`]);
+          const ares = await fetch(url.toString(), {
+            headers: { "Authorization": auth, "Cache-Control": "no-store" }
+          });
+          if (ares.ok) {
+            const data = await ares.json().catch(()=>({}));
+            resources = data.resources || [];
+            nextCur = data.next_cursor || "";
+          } else {
+            const detail = await safeText(ares);
+            return json(ares.status, { error: "Cloudinary list (prefix) failed", detail, rtype:r, dtype:d });
+          }
         }
 
-        const data = await res.json().catch(()=>({}));
-        const resources = data.resources || [];
-        next_map[key] = data.next_cursor ? data.next_cursor : "__END__";
+        // （保險）伺服端再檢查 basename 是否符合 PREFIX（當 disablePrefix=false 時）
+        const filtered = resources.filter(rsc => {
+          if (disablePrefix) return true;
+          const pid = String(rsc.public_id || "");
+          const base = pid.slice(pid.lastIndexOf("/") + 1);
+          return base.startsWith(PREFIX);
+        });
 
-        for (const rsc of resources){
+        next_map[`${r}:${d}`] = nextCur || "";
+        for (const rsc of filtered){
           const pid = String(rsc.public_id || "").replace(/^\/+/, "");
           const id  = pid.replace(new RegExp(`^${escapeRe(FOLDER)}/?`), "") || pid;
           const link = buildSiteLink(event, id);
@@ -66,9 +100,10 @@ export async function handler(event) {
       }
     }
 
+    // 最新在前
     items.sort((a,b)=> new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     const next = serializeCursor(next_map);
-    return json(200, { items, next });
+    return json(200, { items, next, _fallback_used: usedFallback });
   } catch (e) {
     return json(500, { error: String(e?.message || e) });
   }
@@ -84,7 +119,8 @@ function json(status, obj){ return { statusCode: status, headers: { "Content-Typ
 async function safeText(res){ try{ return await res.text(); }catch{ return "(no body)"; } }
 function parseCursor(s){ try { return JSON.parse(Buffer.from(String(s||""), "base64").toString("utf8")) || {}; } catch { return {}; } }
 function serializeCursor(obj){ try { return Buffer.from(JSON.stringify(obj||{}), "utf8").toString("base64"); } catch { return ""; } }
-function escapeRe(s){ return String(s||"").replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function escapeExpr(s){ return String(s||"").replace(/"/g,'\\"'); }
+function escapeRe(s){ return String(s||"").replace(/[.*+?^${}()|[\\]\\/g, '\\$&'); }
 function getBaseUrl(event){
   try{
     const proto = (event.headers["x-forwarded-proto"] || "https");
