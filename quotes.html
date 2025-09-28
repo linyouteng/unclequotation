@@ -9,7 +9,8 @@
     body{ background:#f7f7fb; }
     .page-title{ font-weight:800; letter-spacing:.02em; }
     .card{ border:0; box-shadow: 0 6px 24px rgba(18,38,63,.08); border-radius:16px; }
-    .badge-pill{ border-radius:999px; }
+    .badge-pill{ border-radius: 999px; }
+    .table thead th{ position:sticky; top:0; background:#fff; z-index:2; }
     .id-mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
     .small-mono{ font-size:.8rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
   </style>
@@ -30,33 +31,22 @@
           <input id="q" class="form-control" placeholder="搜尋 客戶/電話/地址/技師/ID">
         </div>
         <div class="col-sm-5">
-  <div class="d-flex flex-wrap gap-2">
-    <select id="filterStatus" class="form-select">
-      <option value="all">全部狀態</option>
-      <option value="active">未作廢</option>
-      <option value="cancelled">已作廢</option>
-    </select>
-    <select id="sortOrder" class="form-select">
-      <option value="desc">最新優先</option>
-      <option value="asc">最舊優先</option>
-    </select>
-    <select id="periodSel" class="form-select">
-      <option value="month" selected>本月</option>
-      <option value="week">本週</option>
-      <option value="year">今年</option>
-      <option value="custom">自訂</option>
-    </select>
-    <input type="date" id="startDate" class="form-control d-none">
-    <input type="date" id="endDate" class="form-control d-none">
-  </div>
-</div>
-<div class="col-sm-3 text-end d-flex justify-content-end align-items-center gap-3">
-          <span id="aggTotals" class="badge bg-primary-subtle text-primary fw-semibold"></span> <span id="monthTotals" class="badge bg-success-subtle text-success fw-semibold"></span> <span id="loadStats" class="text-muted small"></span>
-          <button id="exportCsv" class="btn btn-outline-success">匯出 CSV</button>
+          <div class="d-flex gap-2">
+            <select id="filterStatus" class="form-select">
+              <option value="all">全部狀態</option>
+              <option value="active">未作廢</option>
+              <option value="cancelled">已作廢</option>
+            </select>
+            <select id="sortOrder" class="form-select">
+              <option value="desc">最新優先</option>
+              <option value="asc">最舊優先</option>
+            </select>
+          </div>
+        </div>
+        <div class="col-sm-3 text-end">
           <button id="reload" class="btn btn-secondary">重新整理</button>
         </div>
       </div>
-
       <div class="table-responsive" style="max-height: 70vh;">
         <table class="table align-middle">
           <thead>
@@ -85,48 +75,6 @@ const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
 let NEXT = "";
-let CURRENT_SORT = 'desc';      // 'desc' 最新優先；'asc' 最舊優先
-let CURRENT_FILTER = 'all';     // 'all' | 'active' | 'cancelled'
-const seen = new Set();
-
-function updateStats(){
-  const el = $("#loadStats");
-  if (!el) return;
-  el.textContent = `已載入 ${seen.size} 筆` + (NEXT ? "（可載入更多）" : "（已到最後）");
-}
-
-function fmtMoney(n){ try{ return Number(n||0).toLocaleString() + " 元"; }catch(_){ return String(n); } }
-
-function recomputeAggregates(){
-  const [start, end] = getSelectedPeriodRange();
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth(); // 0-11
-  let sumAll = 0;
-  let sumMonth = 0; // 改為所選期間的統計顯示在當月徽章上（名稱沿用）
-
-  $$("#rows tr").forEach(tr=>{
-    const cancelled = tr.getAttribute('data-cancelled') === '1';
-    const total = parseInt(tr.getAttribute('data-total') || "0", 10) || 0;
-    const ts = parseInt(tr.getAttribute('data-ts') || "NaN", 10);
-    if (!cancelled){
-      sumAll += total;
-      if (withinRange(ts, start, end)){
-        sumMonth += total;
-      }
-    }
-  });
-
-  const agg = $("#aggTotals");
-  const mon = $("#monthTotals");
-  if (agg) agg.textContent = `未作廢合計：${fmtMoney(sumAll)}`;
-  if (mon) mon.textContent = `${($("#periodSel")?.options[$("#periodSel").selectedIndex]?.text || "期間")} 未作廢：${fmtMoney(sumMonth)}`;
-}
-
-  const el = $("#loadStats");
-  if (!el) return;
-  el.textContent = `已載入 ${seen.size} 筆` + (NEXT ? "（可載入更多）" : "（已到最後）");
-}
 
 async function fetchList(next=""){
   const url = new URL("/.netlify/functions/list", location.origin);
@@ -147,46 +95,16 @@ function fmtDate(s){
 }
 function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])); }
 
-function applyClientSortAndFilter(){
-  const tbody = $("#rows");
-  const rows = Array.from(tbody.querySelectorAll("tr")).filter(tr=> tr.querySelector(".id-mono"));
-
-  // 依 created_at 排序（從第一欄取文字再轉日期）
-  rows.sort((a,b)=>{
-    const ta = new Date(a.children[0]?.textContent || 0).getTime();
-    const tb = new Date(b.children[0]?.textContent || 0).getTime();
-    return CURRENT_SORT === 'asc' ? ta - tb : tb - ta;
-  });
-
-  // 重新附加排序後的列
-  rows.forEach(tr=> tbody.appendChild(tr));
-
-  // 狀態篩選（依 data-cancelled 屬性）
-  rows.forEach(tr=>{
-    const isCancelled = tr.getAttribute('data-cancelled') === '1';
-    const visible = (CURRENT_FILTER === 'all') ||
-                    (CURRENT_FILTER === 'active' && !isCancelled) ||
-                    (CURRENT_FILTER === 'cancelled' && isCancelled);
-    tr.classList.toggle('d-none', !visible);
-  });
-}
-
 function renderItems(items){
   const tbody = $("#rows");
   if (!items || !items.length){
-    updateStats();
     if (!tbody.children.length) tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-5">沒有資料</td></tr>';
     return;
   }
   if (tbody.children.length === 1 && tbody.querySelector("td")?.textContent.includes("載入中")) tbody.innerHTML = "";
   const frag = document.createDocumentFragment();
   for (const it of items){
-    const uniqueKey = it.public_id || it.id;
-    if (seen.has(uniqueKey)) continue;
-    seen.add(uniqueKey);
-
     const tr = document.createElement("tr");
-    tr.setAttribute("data-ts", String(new Date(it.created_at).getTime() || ""));
     tr.innerHTML = `
       <td class="text-nowrap">${fmtDate(it.created_at)}</td>
       <td class="cust-cell text-muted small">—</td>
@@ -215,17 +133,13 @@ function renderItems(items){
       const t = tr.querySelector(".total-cell");
       c.textContent = cust || "—";
       t.textContent = total ? (Number(total)||0).toLocaleString() + " 元" : "—";
-      tr.setAttribute('data-cancelled', cancelled ? '1' : '0'); tr.setAttribute('data-total', String(Number(total)||0));
-      if (cancelled){
+      tr.setAttribute('data-cancelled', cancelled ? '1' : '0'); if (cancelled){
         tr.classList.add("table-warning");
         t.insertAdjacentHTML("beforeend", ' <span class="badge bg-warning text-dark badge-pill ms-1">已作廢</span>');
       }
-      applyClientSortAndFilter();
-      recomputeAggregates();
-    }).catch(()=>{ tr.setAttribute('data-cancelled','0'); }).finally(()=>{ updateStats(); recomputeAggregates(); });
+    }).catch(()=>{ tr.setAttribute('data-cancelled','0'); }).finally(()=>{ applyClientSortAndFilter(); });
   }
   tbody.appendChild(frag);
-  updateStats();
 }
 
 async function load(next=""){
@@ -234,14 +148,10 @@ async function load(next=""){
   renderItems(data.items || []);
   NEXT = data.next || "";
   if (NEXT) $("#moreBtn").classList.remove("d-none");
-  applyClientSortAndFilter();
-      recomputeAggregates();
-  updateStats();
 }
 
 $("#moreBtn").addEventListener("click", ()=> load(NEXT));
-$("#reload").addEventListener("click", ()=> { $("#rows").innerHTML=''; NEXT=""; seen.clear(); load(); });
-recomputeAggregates();
+$("#reload").addEventListener("click", ()=> { $("#rows").innerHTML=''; NEXT=""; load(); });
 
 // 客戶端搜尋（在已載入的列上篩選）
 $("#q").addEventListener("input", e=>{
@@ -252,89 +162,43 @@ $("#q").addEventListener("input", e=>{
   });
 });
 
-// 綁定排序 / 篩選控制
-document.addEventListener('DOMContentLoaded', ()=>{
-  const selPeriod = $('#periodSel');
-  const startInp = $('#startDate');
-  const endInp = $('#endDate');
-  selPeriod?.addEventListener('change', ()=>{
-    const v = selPeriod.value;
-    const isCustom = v === 'custom';
-    startInp.classList.toggle('d-none', !isCustom);
-    endInp.classList.toggle('d-none', !isCustom);
-    recomputeAggregates();
+// === 進階：排序與狀態篩選（前端處理） ===
+let CURRENT_SORT = 'desc';      // 'desc' 最新優先；'asc' 最舊優先
+let CURRENT_FILTER = 'all';     // 'all' | 'active' | 'cancelled'
+
+function applyClientSortAndFilter(){
+  const tbody = $("#rows");
+  const rows = Array.from(tbody.querySelectorAll("tr")).filter(tr=> tr.querySelector(".id-mono"));
+
+  // 依 created_at 排序（從第一欄取文字再轉日期）
+  rows.sort((a,b)=>{
+    const ta = new Date(a.children[0]?.textContent || 0).getTime();
+    const tb = new Date(b.children[0]?.textContent || 0).getTime();
+    return CURRENT_SORT === 'asc' ? ta - tb : tb - ta;
   });
-  startInp?.addEventListener('change', recomputeAggregates);
-  endInp?.addEventListener('change', recomputeAggregates);
-  $('#exportCsv')?.addEventListener('click', exportCsv);
+
+  // 重新附加排序後的列
+  rows.forEach(tr=> tbody.appendChild(tr));
+
+  // 狀態篩選（依 data-cancelled 屬性）
+  rows.forEach(tr=>{
+    const isCancelled = tr.getAttribute('data-cancelled') === '1';
+    const visible = (CURRENT_FILTER === 'all') ||
+                    (CURRENT_FILTER === 'active' && !isCancelled) ||
+                    (CURRENT_FILTER === 'cancelled' && isCancelled);
+    tr.classList.toggle('d-none', !visible);
+  });
+}
+
+// 綁定控制項
+document.addEventListener('DOMContentLoaded', ()=>{
   const selSort = $("#sortOrder");
   const selFilter = $("#filterStatus");
-  selSort?.addEventListener('change', ()=>{ CURRENT_SORT = selSort.value; applyClientSortAndFilter();
-      recomputeAggregates(); });
-  selFilter?.addEventListener('change', ()=>{ CURRENT_FILTER = selFilter.value; applyClientSortAndFilter();
-      recomputeAggregates(); });
-  load();
+  selSort?.addEventListener('change', ()=>{ CURRENT_SORT = selSort.value; applyClientSortAndFilter(); });
+  selFilter?.addEventListener('change', ()=>{ CURRENT_FILTER = selFilter.value; applyClientSortAndFilter(); });
 });
 
-function toStartOfDay(d){ const t = new Date(d); t.setHours(0,0,0,0); return t; }
-function toEndOfDay(d){ const t = new Date(d); t.setHours(23,59,59,999); return t; }
-
-function getSelectedPeriodRange(){
-  const sel = $("#periodSel")?.value || "month";
-  const now = new Date();
-  if (sel === "week"){
-    const day = (now.getDay() + 6) % 7; // Monday=0
-    const start = new Date(now); start.setDate(now.getDate() - day);
-    const end = new Date(start); end.setDate(start.getDate() + 6);
-    return [toStartOfDay(start), toEndOfDay(end)];
-  } else if (sel === "year"){
-    const start = new Date(now.getFullYear(), 0, 1);
-    const end = new Date(now.getFullYear(), 11, 31);
-    return [toStartOfDay(start), toEndOfDay(end)];
-  } else if (sel === "custom"){
-    const s = $("#startDate")?.value, e = $("#endDate")?.value;
-    const start = s ? toStartOfDay(new Date(s)) : new Date(0);
-    const end = e ? toEndOfDay(new Date(e)) : new Date(8640000000000000);
-    return [start, end];
-  } else { // month
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    const end = new Date(now.getFullYear(), now.getMonth()+1, 0);
-    return [toStartOfDay(start), toEndOfDay(end)];
-  }
-}
-
-function withinRange(ts, start, end){
-  if (Number.isNaN(ts)) return false;
-  const d = new Date(ts);
-  return d >= start && d <= end;
-}
-
-
-function exportCsv(){
-  const rows = $$("#rows tr").filter(tr => !tr.classList.contains("d-none") && tr.querySelector(".id-mono"));
-  const header = ["建立時間","客戶","合計","ID","狀態","連結"];
-  const lines = [header.join(",")];
-  for (const tr of rows){
-    const dt = tr.children[0]?.textContent.trim() || "";
-    const cust = tr.querySelector(".cust-cell")?.textContent.trim() || "";
-    const total = tr.getAttribute("data-total") || tr.querySelector(".total-cell")?.textContent.replace(/[^0-9]/g,"") || "0";
-    const id = tr.querySelector(".id-mono")?.textContent.trim() || "";
-    const cancelled = tr.getAttribute("data-cancelled") === "1";
-    const link = tr.querySelector("a.btn.btn-primary")?.href || "";
-    const cells = [dt, cust, total, id, cancelled ? "已作廢" : "未作廢", link].map(x => `"${String(x).replace(/"/g,'""')}"`);
-    lines.push(cells.join(","));
-  }
-  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-  const a = document.createElement("a");
-  const url = URL.createObjectURL(blob);
-  a.href = url;
-  const now = new Date();
-  a.download = `quotes_export_${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 0);
-}
-
+document.addEventListener("DOMContentLoaded", ()=> load());
 </script>
 </body>
 </html>
